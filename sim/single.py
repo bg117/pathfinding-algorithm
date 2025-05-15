@@ -252,6 +252,13 @@ for r in range(rows):
 def main():
     ticks = 0
     run = True
+    overlays = []
+
+    # Create len(robots) overlays for each robot
+    for _ in range(len(robots)):
+        overlay = pygame.Surface(win.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 0))
+        overlays.append(overlay)
 
     while run:
         # Handle quitting
@@ -262,9 +269,8 @@ def main():
         draw_grid(win, grid)
 
         # Draw each robot’s known map overlay
-        for robot in robots:
-            overlay = pygame.Surface(win.get_size(), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 0))
+        for i, robot in enumerate(robots):
+            overlay = overlays[i]
             robot.draw_known_map(overlay)
             win.blit(overlay, (0, 0))
 
