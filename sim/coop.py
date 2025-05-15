@@ -6,7 +6,7 @@ import numpy as np  # For efficient matrix/grid manipulation
 from collections import deque  # For BFS queue
 
 # --- Constants ---
-FPS = 60  # Frames per second for the simulation
+FPS = 30  # Frames per second for the simulation
 GRID_SIZE = 20  # Size of each grid cell in pixels
 
 # Color definitions (RGB)
@@ -124,35 +124,29 @@ class RescueRobot:
                 self.known_map[nr][nc] = grid[nr][nc]  # Reveal cell value
 
     def bfs_to_unexplored(self):
-        # Perform BFS to find a path to unexplored areas
-        visited = np.full(self.known_map.shape, False)
-        pos = self.pos
-        queue = deque([pos])
-        visited[pos[0]][pos[1]] = True
-        prev = {}
+        rows, cols = self.known_map.shape
+        visited = set()
+        queue = deque()
+        queue.append((self.pos, []))  # (current_pos, path_so_far)
+        visited.add(self.pos)
 
         while queue:
-            r, c = queue.popleft()
+            (r, c), path = queue.popleft()
+
             if self.known_map[r][c] == UNKNOWN:
-                # Found unexplored free space
-                path = [(r, c)]
-                while (r, c) in prev:
-                    r, c = prev[(r, c)]
-                    path.append((r, c))
-                return path[::-1]  # Return reversed path
+                return path  # Found it, return path to this UNKNOWN
 
             for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nr, nc = r + dr, c + dc
-                if (
-                    0 <= nr < self.known_map.shape[0]
-                    and 0 <= nc < self.known_map.shape[1]
-                    and not visited[nr][nc]
-                    and self.known_map[nr][nc] != OBSTACLE
-                ):
-                    visited[nr][nc] = True
-                    queue.append((nr, nc))
-                    prev[(nr, nc)] = (r, c)
-        return None  # No unexplored area reachable
+                next_pos = (nr, nc)
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    if next_pos not in visited:
+                        tile = self.known_map[nr][nc]
+                        if tile != OBSTACLE and tile != VICTIM:
+                            visited.add(next_pos)
+                            queue.append((next_pos, path + [next_pos]))
+
+        return []  # No path found
 
     def move(self):
         # Main decision logic for robot movement
@@ -160,15 +154,18 @@ class RescueRobot:
         # If following a planned path, continue
         if self.path:
             next = self.path.pop(0)
-            # Double check if the next cell is valid (not an obstacle)
-            if self.known_map[next[0]][next[1]] == OBSTACLE:
-                # If it's an obstacle, find a new path
-                path = self.bfs_to_unexplored()
-                if path:
-                    self.path = path[1:]
-                    next = self.path.pop(0)
+
             self.pos = next
             self.update_known_map()
+
+            next_next = self.path[0] if self.path else None
+            # check if next next cell is valid (not an obstacle nor victim)
+            # if not, remove it from the path
+            if next_next:
+                at_next = self.known_map[next_next[0]][next_next[1]]
+                if at_next == VICTIM or at_next == OBSTACLE:
+                    self.path.pop(0)
+
             return
 
         r, c = self.pos
@@ -178,7 +175,7 @@ class RescueRobot:
         # Priority 1: Rescue nearby victim
         for nr, nc in options:
             if 0 <= nr < rows and 0 <= nc < cols:
-                if grid[nr][nc] == VICTIM:
+                if self.known_map[nr][nc] == VICTIM:
                     self.pos = (nr, nc)
                     victim_positions.discard((nr, nc))  # Remove victim from global set
                     grid[nr][nc] = 0  # Mark as cleared
@@ -187,12 +184,7 @@ class RescueRobot:
 
         # Priority 2: Move to adjacent known free cell
         for nr, nc in options:
-            if (
-                0 <= nr < rows
-                and 0 <= nc < cols
-                and grid[nr][nc] == FREE
-                and self.known_map[nr][nc] == FREE
-            ):
+            if 0 <= nr < rows and 0 <= nc < cols and self.known_map[nr][nc] == FREE:
                 self.pos = (nr, nc)
                 self.update_known_map()
                 return
@@ -201,13 +193,16 @@ class RescueRobot:
         path = self.bfs_to_unexplored()
         if path and len(path) > 1:
             self.path = path[1:]
-            self.pos = self.path.pop(0)
-            self.update_known_map()
+            self.move()
             return
 
         # Priority 4: Go back to traversed cell if stuck
         for nr, nc in options:
-            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == TRAVERSED:
+            if (
+                0 <= nr < rows
+                and 0 <= nc < cols
+                and self.known_map[nr][nc] == TRAVERSED
+            ):
                 self.pos = (nr, nc)
                 self.update_known_map()
                 return
