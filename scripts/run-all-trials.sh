@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Path to the simulator script
-SIMULATOR="rescue-simulator-single.py"
+SIMULATOR="sim/single.py"
 
 # Directories
 MAP_DIR="trials"
