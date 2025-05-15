@@ -1,260 +1,296 @@
-import argparse
-import pygame
-import random
-import numpy as np
-from collections import deque
+# --- Imports ---
+import argparse  # For parsing command-line arguments
+import pygame  # For GUI and visualization
+import random  # For randomizing robot movement
+import numpy as np  # For efficient matrix/grid manipulation
+from collections import deque  # For BFS queue
 
-# Constants
-FPS = 60
+# --- Constants ---
+FPS = 60  # Frames per second for the simulation
+GRID_SIZE = 20  # Size of each grid cell in pixels
 
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-GRAY = (180, 180, 180)
-RED = (255, 0, 0)
-BLUE = (0, 0, 255)
-GREEN = (0, 255, 0)
-YELLOW = (255, 255, 0)
-
-GRID_SIZE = 20
-
-parser = argparse.ArgumentParser(description="Rescue Robot Simulation")
-parser.add_argument(
-    "-f", "--filename", type=str, default="generated_map.bin", help="Input filename"
+# Color definitions (RGB)
+WHITE, BLACK, GRAY, RED, BLUE, GREEN, YELLOW = (
+    (255, 255, 255),
+    (0, 0, 0),
+    (180, 180, 180),
+    (255, 0, 0),
+    (0, 0, 255),
+    (0, 255, 0),
+    (255, 255, 0),
 )
-args = parser.parse_args()
+
+# Map cell types
+UNKNOWN = -2  # Unexplored cell (for robot's known map)
+TRAVERSED = -1  # Already passed cell
+FREE = 0  # Free space
+OBSTACLE = 1  # Wall or obstacle
+VICTIM = 2  # Person to rescue
+ROBOT = 3  # Starting location of a robot
 
 
-def load_map_from_file(filename):
+# --- Argument Parsing ---
+def parse_args():
+    # Get filename from command-line argument
+    parser = argparse.ArgumentParser(description="Rescue Robot Simulation")
+    parser.add_argument(
+        "-f", "--filename", type=str, default="generated_map.bin", help="Input filename"
+    )
+    return parser.parse_args()
+
+
+# --- Utilities ---
+def load_map(filename):
+    # Load binary-encoded map from file
     with open(filename, "rb") as f:
         rows = int.from_bytes(f.read(1), byteorder="little")
         cols = int.from_bytes(f.read(1), byteorder="little")
         grid = np.fromfile(f, dtype=np.int8).reshape((rows, cols))
-    print(f"Loaded map with dimensions: {rows}x{cols}")
+    print(f"Loaded map: {rows}x{cols}")
     return grid
 
 
-filename = args.filename
-grid = load_map_from_file(filename)
-rows, cols = grid.shape
-window_width = cols * GRID_SIZE
-window_height = rows * GRID_SIZE
+def draw_grid(surface, grid):
+    surface.fill(WHITE)
 
-pygame.init()
-pygame.display.set_caption("Rescue Robot Simulation")
-win = pygame.display.set_mode((window_width, window_height + 30))
-s = pygame.Surface(win.get_size(), pygame.SRCALPHA)  # transparent surface
-clock = pygame.time.Clock()
-
-obstacle_positions = set()
-victim_positions = set()
-robot_positions = []
-
-
-def draw_grid():
+    # Draw the full grid, showing walls and victims
+    rows, cols = grid.shape
     for r in range(rows):
         for c in range(cols):
-            color = WHITE
-            if grid[r][c] == 1:
-                color = BLACK
-            elif grid[r][c] == 2:
-                color = RED
+            color = {OBSTACLE: BLACK, VICTIM: RED}.get(
+                grid[r, c], WHITE
+            )  # Black for obstacle, red for victim
             pygame.draw.rect(
-                win, color, (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE)
+                surface, color, (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE)
             )
             pygame.draw.rect(
-                win, GRAY, (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE), 1
+                surface, GRAY, (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE), 1
             )
 
 
-def bfs_to_unexplored(robot):
-    start = tuple(robot["pos"])
-    known = robot["known_map"]
-    rows, cols = known.shape
+def draw_timer(surface, ticks, rows):
+    # Draw the timer showing how many ticks have passed
+    font = pygame.font.SysFont(None, 24)
+    surface.blit(font.render(f"Ticks: {ticks}", True, BLACK), (5, rows * GRID_SIZE + 5))
 
-    visited = np.full((rows, cols), False)
-    queue = deque([start])
-    visited[start[0]][start[1]] = True
-    prev = {}
 
-    while queue:
-        r, c = queue.popleft()
+# --- Robot Class ---
+class RescueRobot:
+    def __init__(self, start_pos, map_shape):
+        self.pos = tuple(start_pos)  # Current position
+        self.path = []  # Path to follow
+        self.known_map = np.full(
+            map_shape, UNKNOWN, dtype=np.int8
+        )  # Map the robot builds over time
+        self.update_known_map()  # Explore surroundings initially
 
-        if known[r, c] == 0:
-            # Found an unexplored tile
-            path = [(r, c)]
-            while (r, c) in prev:
-                r, c = prev[(r, c)]
-                path.append((r, c))
-            return path[::-1]  # Reverse the path from start to goal
+    def update_known_map(self):
+        # Update the robot’s known map based on current position
+        r, c = self.pos
+        self.known_map[r][c] = TRAVERSED
+        for nr, nc in [
+            (r + 1, c),
+            (r - 1, c),
+            (r, c + 1),
+            (r, c - 1),
+        ]:  # Up, Down, Left, Right
+            if (
+                0 <= nr < self.known_map.shape[0]
+                and 0 <= nc < self.known_map.shape[1]
+                and self.known_map[nr][nc] == UNKNOWN
+            ):
+                self.known_map[nr][nc] = grid[nr][nc]  # Reveal cell value
 
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = r + dr, c + dc
+    def bfs_to_unexplored(self):
+        # Perform BFS to find a path to unexplored areas
+        visited = np.full(self.known_map.shape, False)
+        pos = self.pos
+        queue = deque([pos])
+        visited[pos[0]][pos[1]] = True
+        prev = {}
+
+        while queue:
+            r, c = queue.popleft()
+            if self.known_map[r][c] == UNKNOWN:
+                # Found unexplored free space
+                path = [(r, c)]
+                while (r, c) in prev:
+                    r, c = prev[(r, c)]
+                    path.append((r, c))
+                return path[::-1]  # Return reversed path
+
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if (
+                    0 <= nr < self.known_map.shape[0]
+                    and 0 <= nc < self.known_map.shape[1]
+                    and not visited[nr][nc]
+                    and self.known_map[nr][nc] != OBSTACLE
+                ):
+                    visited[nr][nc] = True
+                    queue.append((nr, nc))
+                    prev[(nr, nc)] = (r, c)
+        return None  # No unexplored area reachable
+
+    def move(self):
+        # Main decision logic for robot movement
+
+        # If following a planned path, continue
+        if self.path:
+            next = self.path.pop(0)
+            # Double check if the next cell is valid (not an obstacle)
+            if self.known_map[next[0]][next[1]] == OBSTACLE:
+                # If it's an obstacle, find a new path
+                path = self.bfs_to_unexplored()
+                if path:
+                    self.path = path[1:]
+                    next = self.path.pop(0)
+            self.pos = next
+            self.update_known_map()
+            return
+
+        r, c = self.pos
+        options = [(r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)]
+        random.shuffle(options)  # Randomize movement direction
+
+        # Priority 1: Rescue nearby victim
+        for nr, nc in options:
+            if 0 <= nr < rows and 0 <= nc < cols:
+                if grid[nr][nc] == VICTIM:
+                    self.pos = (nr, nc)
+                    victim_positions.discard((nr, nc))  # Remove victim from global set
+                    grid[nr][nc] = 0  # Mark as cleared
+                    self.update_known_map()
+                    return
+
+        # Priority 2: Move to adjacent known free cell
+        for nr, nc in options:
             if (
                 0 <= nr < rows
                 and 0 <= nc < cols
-                and not visited[nr, nc]
-                and known[nr, nc] != 1
+                and grid[nr][nc] == FREE
+                and self.known_map[nr][nc] == FREE
             ):
-                queue.append((nr, nc))
-                visited[nr, nc] = True
-                prev[(nr, nc)] = (r, c)
+                self.pos = (nr, nc)
+                self.update_known_map()
+                return
 
-    return None  # No unexplored tiles reachable
-
-
-def move_robot(robot):
-    r, c = robot["pos"]
-    options = [(r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)]
-    position = None
-    has_space = False
-
-    if "path" in robot and robot["path"]:
-        robot["pos"] = robot["path"].pop(0)
-        update_known_map(robot, grid)
-        return
-
-    random.shuffle(options)
-
-    for nr, nc in options:
-        if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != 1:
-            # priority to move to a victim
-            if grid[nr][nc] == 2:
-                position = [nr, nc]
-                grid[nr][nc] = 0
-                victim_positions.discard((nr, nc))
-                break
-
-    if position is None:
-        for nr, nc in options:
-            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != 1:
-                # if not a victim, prefer to move to an empty space
-                if grid[nr][nc] == 0 and robot["known_map"][nr][nc] == 0:
-                    has_space = True
-                    position = [nr, nc]
-                    break
-
-    # if no victim or empty space, move to any traversed space
-    if position is None and not has_space:
-        path = bfs_to_unexplored(robot)
+        # Priority 3: Find path to nearest unexplored cell
+        path = self.bfs_to_unexplored()
         if path and len(path) > 1:
-            robot["path"] = path[1:]  # Skip current pos
-            robot["pos"] = robot["path"].pop(0)
-            update_known_map(robot, grid)
+            self.path = path[1:]
+            self.pos = self.path.pop(0)
+            self.update_known_map()
             return
 
+        # Priority 4: Go back to traversed cell if stuck
         for nr, nc in options:
-            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == -1:
-                position = [nr, nc]
-                break
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == TRAVERSED:
+                self.pos = (nr, nc)
+                self.update_known_map()
+                return
 
-    if position is None:
-        raise Exception("No valid move found for the robot.")
+    def draw_known_map(self, surface):
+        # Adjust transparency based on number of robots, minimum 50
+        transparency = max(255 // len(robots), 75)
+        # Show what the robot has discovered so far
+        for r in range(self.known_map.shape[0]):
+            for c in range(self.known_map.shape[1]):
+                block = self.known_map[r][c]
+                if block == TRAVERSED:
+                    color = (255, 255, 0, transparency)  # Yellow with transparency
+                elif block == FREE:
+                    color = (0, 255, 0, transparency)  # Green with transparency
+                else:
+                    continue
+                pygame.draw.rect(
+                    surface, color, (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE)
+                )
+                pygame.draw.rect(
+                    surface,
+                    GRAY,
+                    (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE),
+                    1,
+                )
 
-    # update the robot's position
-    robot["pos"] = position
-    grid[position[0]][position[1]] = -1
-    update_known_map(robot, grid)
-
-
-def draw_known_map(win, robot):
-    known = robot["known_map"]
-
-    for r in range(known.shape[0]):
-        for c in range(known.shape[1]):
-            val = known[r][c]
-            x = c * GRID_SIZE
-            y = r * GRID_SIZE
-
-            if val == -1:
-                color = (255, 255, 0, 100)  # traversed
-            elif val == 0:
-                color = (0, 255, 0, 100)  # transparent green
-            else:
-                continue  # skip if unknown
-
-            pygame.draw.rect(s, color, (x, y, GRID_SIZE, GRID_SIZE))
-            pygame.draw.rect(s, GRAY, (x, y, GRID_SIZE, GRID_SIZE), 1)
-
-    win.blit(s, (0, 0))  # overlay on top of real map
-
-
-def draw_robots():
-    t = pygame.Surface(s.get_size(), pygame.SRCALPHA)  # transparent surface
-    t.fill((0, 0, 0, 0))  # clear the surface
-    for i, robot in enumerate(robot_positions):
-        r, c = robot["pos"]
-        # draw_known_map(win, robot)
+    def draw(self, surface):
+        # Draw robot as a blue circle
+        r, c = self.pos
         pygame.draw.circle(
-            t,
+            surface,
             BLUE,
             (c * GRID_SIZE + GRID_SIZE // 2, r * GRID_SIZE + GRID_SIZE // 2),
             GRID_SIZE // 3,
         )
-        win.blit(t, (0, 0))  # overlay on top of real map
 
 
-def draw_timer(win, ticks, rows):
-    font = pygame.font.SysFont(None, 24)
-    time_text = font.render(f"Ticks: {ticks}", True, (0, 0, 0))
-    win.blit(time_text, (5, rows * GRID_SIZE + 5))
+# --- Initialization ---
+args = parse_args()
+grid = load_map(args.filename)
+rows, cols = grid.shape
+
+# Set up Pygame window
+window_size = (cols * GRID_SIZE, rows * GRID_SIZE + 30)
+pygame.init()
+pygame.display.set_caption("Rescue Robot Simulation")
+win = pygame.display.set_mode(window_size)
+clock = pygame.time.Clock()
+
+robots = []  # List of robots
+victim_positions = set()  # Track all victim positions
+
+# Populate grid with robots and victims
+for r in range(rows):
+    for c in range(cols):
+        if grid[r][c] == VICTIM:
+            victim_positions.add((r, c))
+        elif grid[r][c] == ROBOT:
+            robots.append(RescueRobot((r, c), (rows, cols)))
 
 
-def setup():
-    # read the grid and set up the positions
-    for r in range(rows):
-        for c in range(cols):
-            at = grid[r][c]
-            if at == 1:
-                obstacle_positions.add((r, c))
-            elif at == 2:
-                victim_positions.add((r, c))
-            elif at == 3:
-                robot_positions.append(
-                    {"pos": [r, c], "known_map": np.full((rows, cols), -2)}
-                )
-
-
-def update_known_map(robot, true_map):
-    r, c = robot["pos"]
-    options = [(r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)]
-
-    # Mark the current position as traversed
-    robot["known_map"][r][c] = -1
-    # Mark adjacent positions based on the true map
-    for nr, nc in options:
-        if 0 <= nr < rows and 0 <= nc < cols and robot["known_map"][nr][nc] == -2:
-            robot["known_map"][nr][nc] = true_map[nr][nc]
-
-
+# --- Main Loop ---
 def main():
-    run = True
     ticks = 0
-    for robot in robot_positions:
-        update_known_map(robot, grid)
+    run = True
 
     while run:
+        # Handle quitting
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
 
-        win.fill(WHITE)
-        draw_grid()
-        draw_robots()
+        draw_grid(win, grid)
+
+        # Draw each robot’s known map overlay
+        for robot in robots:
+            overlay = pygame.Surface(win.get_size(), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 0))
+            robot.draw_known_map(overlay)
+            win.blit(overlay, (0, 0))
+
+        # Draw each robot
+        for robot in robots:
+            robot.draw(win)
+
         draw_timer(win, ticks, rows)
         pygame.display.update()
-
         clock.tick(FPS)
-        ticks += 1
-        for robot in robot_positions:
-            move_robot(robot)
-        if len(victim_positions) == 0:
+
+        # Move all robots
+        for robot in robots:
+            robot.move()
+
+        # Check if all victims are rescued
+        if not victim_positions:
             print("All victims rescued!")
             run = False
+
+        ticks += 1
 
     print(f"Simulation finished in {ticks} ticks.")
     pygame.quit()
 
 
+# --- Entry Point ---
 if __name__ == "__main__":
-    setup()
     main()
