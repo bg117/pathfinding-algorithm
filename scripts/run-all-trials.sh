@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # Path to the simulator script
-SIMULATOR="sim/single.py"
+ARGV_1="$1"
+SIMULATOR="sim/${ARGV_1}.py"
 
 # Directories
 MAP_DIR="trials"
-LOG_DIR="logs"
+LOG_DIR="logs/$ARGV_1"
 
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
